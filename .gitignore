@@ -33,3 +33,6 @@ build/
 .vscode/
 
 /docs/scraping_experiment.md
+
+# 개인 개발·배포 체크리스트
+/docs/deployment-checklist.local.md
