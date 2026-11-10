@@ -9,6 +9,7 @@
 - `docs/requirements.md`: 서비스 요구사항
 - `docs/scraping_guide.md`: 사이트별 데이터 수집 절차
 - `docs/scraping_experiment.md`: 실험 결과와 검증 한계
+- `docs/stack.md`: 기술 스택
 
 ## 작업 원칙
 
