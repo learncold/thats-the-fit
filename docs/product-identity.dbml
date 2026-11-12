@@ -1,0 +1,135 @@
+Project product_identity_draft {
+  database_type: 'PostgreSQL'
+  Note: '''
+    DBML에서는 복합 유일성을 indexes 블록의 unique로 표현한다.
+    Flyway 마이그레이션에서는 아래 규칙을 각 테이블의 이름 있는 UNIQUE 제약으로 선언한다.
+    products: CONSTRAINT uq_products_mall_source_id UNIQUE (mall_code, source_product_id)
+    product_variants: CONSTRAINT uq_product_variants_product_size_options UNIQUE (product_id, size_name, option_values)
+    pending_measurement_reviews: CONSTRAINT uq_pending_measurement_reviews_variant_measurement UNIQUE (variant_id, measurement_type)
+    PostgreSQL이 각 제약을 위한 유일 인덱스를 자동으로 생성한다.
+  '''
+}
+
+Table sellers {
+  code text [pk, note: '내부에서 고정하는 쇼핑몰 코드. ably, zigzag, musinsa 등']
+  name text
+}
+ 
+Table products {
+  id bigint [pk, increment]
+  mall_code text [not null, ref: > sellers.code]
+  source_product_id text [not null, note: '에이블리 sno, 지그재그 product_id, 무신사 goodsNo를 문자열로 보존']
+  name text [not null]
+  source_url text
+  last_measurements_received_at timestamptz [note: '실측을 마지막으로 수신한 시각. 검수 대상 실측만 받은 경우도 포함한다.']
+
+  indexes {
+    (mall_code, source_product_id) [unique, name: 'uq_products_mall_source_id']
+  }
+
+  Note: '재수집 시 쇼핑몰 코드와 원본 상품 ID로 기존 상품을 찾는다. 이름과 URL은 갱신할 수 있다.'
+}
+
+Enum fit_tag {
+  wide [note: '와이드']
+  straight [note: '스트레이트']
+  bootcut [note: '부츠컷']
+  slim [note: '슬림']
+  tapered [note: '테이퍼드']
+  curved [note: '커브드']
+}
+
+Table product_variants {
+  id bigint [pk, increment]
+  product_id bigint [not null, ref: > products.id]
+  size_name text [not null, note: '예: S']
+  option_values jsonb [not null, note: '사이즈 외에 확인한 옵션값을 JSON 객체로 저장한다. 예를 들어 기장이 미들이면 {"length":"미들"}을 저장한다.']
+  source_option_id text [note: '원본 판매 옵션과 해당 실측 행의 연결을 확인한 경우에만 저장하는 보조 ID']
+  fit_tags fit_tag[] [not null, default: '{}', note: '해당 사이즈·옵션에서 확인한 검색용 핏 태그']
+
+  indexes {
+    (product_id, size_name, option_values) [unique, name: 'uq_product_variants_product_size_options']
+  }
+
+  checks {
+    `cardinality(fit_tags) = num_nonnulls(
+      array_position(fit_tags, 'wide'::fit_tag),
+      array_position(fit_tags, 'straight'::fit_tag),
+      array_position(fit_tags, 'bootcut'::fit_tag),
+      array_position(fit_tags, 'slim'::fit_tag),
+      array_position(fit_tags, 'tapered'::fit_tag),
+      array_position(fit_tags, 'curved'::fit_tag)
+    )` [name: 'ck_product_variants_fit_tags_unique']
+  }
+
+  Note: '''
+    재수집 시 상품 ID, 사이즈명, 옵션값 조합으로 기존 행을 찾는다.
+    추가 옵션이 없는 것이 확인되면 옵션값에 {}를 저장한다. 옵션 조합을 확인하지 못한 실측은 원문을 검수 대상으로 남긴다.
+    원본 판매 옵션 ID와 실측 행의 연결을 확인하면 기존 행에 보조 ID를 채운다.
+    실측 숫자나 실측표 행 순서는 식별값에 포함하지 않는다.
+  '''
+}
+
+Enum measurement_type {
+  total_length [note: '총장']
+  waist_width [note: '허리단면']
+  hip_width [note: '엉덩이단면']
+  thigh_width [note: '허벅지단면']
+  rise [note: '밑위']
+  hem_width [note: '밑단단면']
+}
+
+Table variant_measurements {
+  variant_id bigint [not null, ref: > product_variants.id]
+  measurement_type measurement_type [not null]
+  value_cm numeric [not null, note: '현재 검색에 사용할 수 있는 cm 값']
+
+  indexes {
+    (variant_id, measurement_type) [pk]
+  }
+
+  checks {
+    `value_cm > 0` [name: 'ck_variant_measurements_positive_value']
+  }
+
+  Note: '관리자가 수정한 값도 해당 사이즈·옵션과 항목의 현재 실측으로 저장한다.'
+}
+
+Enum measurement_review_reason {
+  out_of_range [note: '실측값이 항목별 검수 범위를 벗어남']
+  ambiguous_value [note: '원본 값에서 비교할 단일 치수를 확정하기 어려움']
+  conflicting_values [note: '같은 사이즈·옵션과 실측 항목에 대해 수집 출처별 값이 다름']
+}
+
+Table pending_measurement_reviews {
+  id bigint [pk, increment]
+  variant_id bigint [not null, ref: > product_variants.id]
+  measurement_type measurement_type [not null]
+  source_snapshot jsonb [not null, note: '수집 응답에서 검수에 필요한 실측 행과 측정 정보만 추려 저장한다.']
+  source text [not null, note: '응답 출처를 식별하는 API 이름. 예를 들어 GetSizeInfo를 저장한다.']
+  collected_at timestamptz [not null, note: '이 응답을 수집한 시각']
+  reason_code measurement_review_reason [not null]
+
+  indexes {
+    (variant_id, measurement_type) [unique, name: 'uq_pending_measurement_reviews_variant_measurement']
+  }
+
+  Note: '검수 대기 중인 항목을 저장한다. 수정 실측 저장과 대기 행 삭제를 한 트랜잭션에서 처리한다.'
+}
+
+Enum measurement_collection_issue_code {
+  request_timeout [note: '요청 또는 실측 응답 대기가 제한 시간을 초과함']
+  access_denied [note: '세션 만료, 권한 오류 또는 접근 차단으로 응답을 확보하지 못함']
+  request_failed [note: '네트워크 오류, 서버 오류 등 기타 요청 실패']
+  invalid_response [note: '응답을 받았으나 실측 응답 형식을 해석할 수 없음']
+  no_measurements [note: '정상 응답에서 실측을 확보하지 못함']
+}
+
+Table measurement_collection_issues {
+  id bigint [pk, increment]
+  product_id bigint [not null, ref: > products.id]
+  finished_at timestamptz [not null, note: '실측 수집 시도가 끝난 시각']
+  code measurement_collection_issue_code [not null]
+
+  Note: '등록 상품의 실측 수집에 실패하거나 정상 응답에서 실측을 확보하지 못한 경우 한 행을 저장한다. 재시도에도 같은 규칙을 적용한다.'
+}
