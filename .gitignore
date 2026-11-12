@@ -34,5 +34,9 @@ build/
 
 /docs/scraping_experiment.md
 
+# Front
+/PRODUCT.md
+/.impeccable
+
 # 개인 개발·배포 체크리스트
 /docs/deployment-checklist.local.md
