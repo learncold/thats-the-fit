@@ -1,0 +1,494 @@
+openapi: 3.1.1
+info:
+  title: That's the Fit MVP API
+  version: 0.1.0
+
+paths:
+  /api/products:
+    get:
+      operationId: searchProductsByName
+      summary: 등록 상품을 상품명으로 검색
+      description: 서비스 DB에서 검색어가 상품명에 포함된 상품을 찾아 상품 ID 오름차순으로 반환한다.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: 앞뒤 공백을 제거한 검색어. 공백만 입력하면 400을 반환한다.
+          schema:
+            type: string
+            maxLength: 100
+            pattern: '\S'
+          example: 와이드 데님
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 검색 성공. 일치하는 상품이 없으면 빈 목록을 반환한다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductPage'
+              examples:
+                found:
+                  value:
+                    products:
+                      - id: 42
+                        name: 와이드 데님 팬츠
+                        mallCode: musinsa
+                    hasNext: false
+                empty:
+                  value:
+                    products: []
+                    hasNext: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/products/by-url:
+    post:
+      operationId: loadReferenceMeasurementsByUrl
+      summary: 쇼핑몰 상품 URL로 기준 실측 조회
+      description: |
+        지원하는 상품 URL에서 쇼핑몰과 원본 상품 ID를 식별한다. 등록 상품은 DB의 실측을 조회한다.
+        미등록 상품은 식별한 쇼핑몰의 수집기로 해당 상품의 실측을 가져온다. 프런트엔드는 응답을 기다리는 동안 로딩 상태를 표시한다.
+        수집한 실측은 기준값 입력에 사용하며 상품을 자동 등록하지 않는다.
+        응답의 `variants`에서 사용자가 사이즈·옵션을 선택하면 해당 `measurements`의 항목을 폼에 추가하고 기준값을 채운다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+                  description: 지원하는 쇼핑몰의 상품 상세 URL
+            example:
+              url: https://www.musinsa.com/products/6148650
+      responses:
+        '200':
+          description: 기준 상품 정보와 비교 가능한 실측이 하나 이상 있는 사이즈·옵션 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [productName, mallCode, variants]
+                properties:
+                  productName:
+                    type: string
+                  mallCode:
+                    $ref: '#/components/schemas/MallCode'
+                  variants:
+                    type: array
+                    minItems: 1
+                    items:
+                      $ref: '#/components/schemas/VariantDetail'
+                      properties:
+                        measurements:
+                          minProperties: 1
+              examples:
+                registered:
+                  value:
+                    productName: 와이드 데님 팬츠
+                    mallCode: musinsa
+                    variants:
+                      - sizeName: M
+                        optionValues: {length: 롱}
+                        fitTags: [wide, curved]
+                        measurements: {waist_width: 40.5, total_length: 104}
+                collected:
+                  value:
+                    productName: 스트레이트 데님 팬츠
+                    mallCode: musinsa
+                    variants:
+                      - sizeName: S
+                        optionValues: {}
+                        fitTags: []
+                        measurements: {waist_width: 38, total_length: 102}
+        '400':
+          description: URL이 누락되었거나, 형식이 잘못되었거나, 지원하는 상품 URL이 아님
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidUrl:
+                  value:
+                    code: INVALID_REQUEST
+                    message: 올바른 상품 URL을 입력해 주세요.
+                    field: url
+                unsupportedUrl:
+                  value:
+                    code: UNSUPPORTED_PRODUCT_URL
+                    message: 지원하는 쇼핑몰의 상품 상세 URL을 입력해 주세요.
+                    field: url
+        '404':
+          description: 쇼핑몰에서 해당 상품이 없음을 확인함
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: SOURCE_PRODUCT_NOT_FOUND
+                message: 쇼핑몰에서 상품을 찾을 수 없습니다. 실측을 직접 입력해 주세요.
+        '422':
+          description: DB에 저장된 실측 또는 수집 응답에 비교 가능한 실측이 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: MEASUREMENTS_UNAVAILABLE
+                message: 비교에 사용할 수 있는 실측이 없습니다. 실측을 직접 입력해 주세요.
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          description: 쇼핑몰 요청이 실패했거나 응답을 해석할 수 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: MEASUREMENT_COLLECTION_FAILED
+                message: 쇼핑몰 실측을 가져오지 못했습니다. 실측을 직접 입력하거나 잠시 후 다시 시도해 주세요.
+        '504':
+          description: 쇼핑몰 실측 수집 제한 시간을 초과함
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: MEASUREMENT_COLLECTION_TIMEOUT
+                message: 실측 수집 시간이 초과됐습니다. 실측을 직접 입력하거나 잠시 후 다시 시도해 주세요.
+
+  /api/products/{productId}/variants:
+    get:
+      operationId: listProductVariants
+      summary: 등록 상품의 사이즈·옵션과 실측 조회
+      description: 등록된 사이즈·옵션 전체를 ID 오름차순으로 반환한다. 선택한 항목의 `measurements`를 기준 실측으로 사용할 수 있다. 실측이 비어 있으면 직접 입력을 안내한다.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: 사이즈·옵션 목록. 등록된 사이즈·옵션이 없으면 빈 목록을 반환한다.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VariantDetail'
+              examples:
+                partialMeasurements:
+                  value:
+                    - sizeName: M
+                      optionValues: {length: 롱}
+                      fitTags: [wide, curved]
+                      measurements: {waist_width: 40.5, total_length: 104}
+                    - sizeName: L
+                      optionValues: {length: 롱}
+                      fitTags: [wide, curved]
+                      measurements: {}
+                empty:
+                  value: []
+        '400':
+          description: 상품 ID가 유효하지 않음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: INVALID_REQUEST
+                message: 상품 ID는 1 이상의 정수여야 합니다.
+                field: productId
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/search/similar-variants:
+    post:
+      operationId: searchSimilarVariants
+      summary: 실측과 핏 조건으로 유사한 사이즈·옵션 검색
+      description: |
+        검색 결과 한 건은 상품의 사이즈·옵션 조합 하나이며, 같은 상품의 여러 조합이 각각 결과에 포함될 수 있다.
+        클라이언트는 검색 당시 선택한 핏 태그와 결과의 fitTags에 공통으로 포함된 태그를 강조 표시한다.
+        각 결과의 measurements에는 비교 가능한 모든 실측을 반환한다. 클라이언트는 검색 당시 기준값을 보관하고, 검색에 사용한 항목별로 후보 실측에서 기준값을 빼 표시한다.
+        각 사이즈·옵션의 실측이 선택한 모든 항목의 허용 범위에 들고 필수 핏 태그가 모두 일치해야 포함한다.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimilarVariantSearchRequest'
+            examples:
+              withFit:
+                value:
+                  measurements:
+                    waist_width: {referenceCm: 40, minCm: 39, maxCm: 41}
+                    total_length: {referenceCm: 105, minCm: 103, maxCm: 107}
+                  fitTagConditions: {wide: required, curved: preferred}
+              measurementsOnly:
+                value:
+                  measurements:
+                    waist_width: {referenceCm: 40.5, minCm: 39.5, maxCm: 41.5}
+      responses:
+        '200':
+          description: 조건에 맞는 사이즈·옵션 조합 목록. 일치하는 조합이 없으면 빈 목록을 반환한다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimilarVariantPage'
+              examples:
+                found:
+                  value:
+                    matches:
+                      - productName: 와이드 데님 팬츠
+                        mallCode: musinsa
+                        sourceUrl: https://www.musinsa.com/products/6148650
+                        priceKrw: 49000
+                        saleStatus: on_sale
+                        productInfoCheckedAt: '2026-11-12T14:20:00Z'
+                        sizeName: M
+                        optionValues: {length: 롱}
+                        fitTags: [wide, curved]
+                        measurements: {waist_width: 40.5, total_length: 104}
+                    hasNext: false
+                empty:
+                  value: {matches: [], hasNext: false}
+        '400':
+          description: 실측, 핏 조건 또는 페이지 요청값이 유효하지 않음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingMeasurements:
+                  value:
+                    code: INVALID_REQUEST
+                    message: 실측 항목을 하나 이상 입력해 주세요.
+                    field: measurements
+                missingReference:
+                  value:
+                    code: INVALID_REQUEST
+                    message: 선택한 실측 항목의 기준값을 모두 입력해 주세요.
+                    field: measurements.total_length.referenceCm
+                reversedRange:
+                  value:
+                    code: INVALID_REQUEST
+                    message: 최솟값은 최댓값 이하여야 합니다.
+                    field: measurements.waist_width.minCm
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  parameters:
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      description: 서비스 DB의 상품 ID
+      schema:
+        $ref: '#/components/schemas/EntityId'
+      example: 42
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 1부터 시작하는 페이지 번호
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      required: false
+      description: 한 페이지에 요청할 최대 항목 수
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+
+  schemas:
+    EntityId:
+      type: integer
+      format: int64
+      minimum: 1
+    ProductPage:
+      type: object
+      required: [products, hasNext]
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductSummary'
+        hasNext:
+          type: boolean
+          description: 같은 조건으로 요청할 다음 페이지가 있는지 여부
+    ProductSummary:
+      type: object
+      required: [id, name, mallCode]
+      properties:
+        id:
+          $ref: '#/components/schemas/EntityId'
+        name:
+          type: string
+        mallCode:
+          $ref: '#/components/schemas/MallCode'
+    MallCode:
+      type: string
+      enum: [ably, zigzag, musinsa]
+    FitTag:
+      type: string
+      enum: [wide, straight, bootcut, slim, tapered, curved]
+    MeasurementType:
+      type: string
+      enum: [total_length, waist_width, hip_width, thigh_width, rise, hem_width]
+    Measurements:
+      type: object
+      description: 해당 사이즈·옵션에서 비교에 사용할 수 있는 모든 실측값을 항목 코드별로 반환한다. 누락된 항목은 비교에 사용할 수 없다.
+      propertyNames:
+        $ref: '#/components/schemas/MeasurementType'
+      additionalProperties:
+        $ref: '#/components/schemas/MeasurementCm'
+    VariantDetail:
+      type: object
+      required: [sizeName, optionValues, fitTags, measurements]
+      properties:
+        sizeName:
+          type: string
+        optionValues:
+          type: object
+          description: 사이즈명 외에 확인된 판매 옵션. 추가 옵션이 없으면 빈 객체를 반환한다.
+        fitTags:
+          type: array
+          description: 확인된 핏 태그. 확인된 태그가 없으면 빈 배열을 반환한다.
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/FitTag'
+        measurements:
+          $ref: '#/components/schemas/Measurements'
+    SimilarVariantSearchRequest:
+      type: object
+      required: [measurements]
+      properties:
+        measurements:
+          type: object
+          minProperties: 1
+          description: 선택한 실측 항목별 기준값과 검색 범위. 선택한 모든 항목의 세 값을 함께 보낸다.
+          propertyNames:
+            $ref: '#/components/schemas/MeasurementType'
+          additionalProperties:
+            $ref: '#/components/schemas/MeasurementCondition'
+        fitTagConditions:
+          type: object
+          description: 선택한 핏 태그별 필수 또는 선호 설정. 생략하거나 빈 객체를 보내면 핏 조건을 적용하지 않는다.
+          propertyNames:
+            $ref: '#/components/schemas/FitTag'
+          additionalProperties:
+            type: string
+            enum: [required, preferred]
+    MeasurementCondition:
+      type: object
+      required: [referenceCm, minCm, maxCm]
+      description: 최솟값과 최댓값을 모두 범위에 포함한다. 서버는 최솟값이 최댓값 이하인지 검사한다.
+      properties:
+        referenceCm:
+          $ref: '#/components/schemas/MeasurementCm'
+        minCm:
+          $ref: '#/components/schemas/MeasurementCm'
+        maxCm:
+          $ref: '#/components/schemas/MeasurementCm'
+    SimilarVariantMatch:
+      allOf:
+        - $ref: '#/components/schemas/VariantDetail'
+        - type: object
+          required: [productName, mallCode, sourceUrl, priceKrw, saleStatus, productInfoCheckedAt]
+          properties:
+            productName:
+              type: string
+            mallCode:
+              $ref: '#/components/schemas/MallCode'
+            sourceUrl:
+              type: [string, 'null']
+              format: uri
+              description: 원본 상품 주소. 확보하지 못했으면 null을 반환한다.
+            priceKrw:
+              type: [integer, 'null']
+              minimum: 0
+              description: 확인한 표시 가격(원). 확인할 수 없으면 null을 반환한다.
+            saleStatus:
+              type: [string, 'null']
+              enum: [on_sale, sold_out, off_sale, null]
+              description: 판매 중, 품절, 판매 종료 중 확인한 상태. 확인할 수 없으면 null을 반환한다.
+            productInfoCheckedAt:
+              description: 상품 기본 정보를 마지막으로 확인한 시각. 확인 시각이 없으면 null을 반환한다.
+              type: [string, 'null']
+              format: date-time
+              pattern: 'Z$'
+    SimilarVariantPage:
+      type: object
+      required: [matches, hasNext]
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimilarVariantMatch'
+        hasNext:
+          type: boolean
+          description: 같은 조건으로 요청할 다음 페이지가 있는지 여부
+    MeasurementCm:
+      description: cm 단위의 양수 실측값. 소수 입력을 허용한다.
+      type: number
+      exclusiveMinimum: 0
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 프런트엔드가 오류를 구분하는 코드
+        message:
+          type: string
+          description: 오류에 대한 안내 문구
+        field:
+          type: string
+          description: 특정 입력값이 문제일 때 해당 필드명
+
+  responses:
+    ProductNotFound:
+      description: 서비스 DB에 등록된 상품을 찾을 수 없음
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: PRODUCT_NOT_FOUND
+            message: 등록된 상품을 찾을 수 없습니다.
+    BadRequest:
+      description: 필수 입력이 없거나 값이 허용 범위를 벗어난 요청
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: INVALID_REQUEST
+            message: size는 1 이상 50 이하의 정수여야 합니다.
+            field: size
+    InternalServerError:
+      description: 서버가 요청을 처리하지 못함
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: INTERNAL_ERROR
+            message: 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.
