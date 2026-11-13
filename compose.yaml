@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: thats_the_fit
+      POSTGRES_USER: thats_the_fit
+      POSTGRES_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?Set SPRING_DATASOURCE_PASSWORD}
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, thats_the_fit, -d, thats_the_fit]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
