@@ -5,26 +5,43 @@ Project product_identity_draft {
     Flyway 마이그레이션에서는 아래 규칙을 각 테이블의 이름 있는 UNIQUE 제약으로 선언한다.
     products: CONSTRAINT uq_products_mall_source_id UNIQUE (mall_code, source_product_id)
     product_variants: CONSTRAINT uq_product_variants_product_size_options UNIQUE (product_id, size_name, option_values)
+    product_variants: CONSTRAINT uq_product_variants_product_id_id UNIQUE (product_id, id)
     pending_measurement_reviews: CONSTRAINT uq_pending_measurement_reviews_variant_measurement UNIQUE (variant_id, measurement_type)
     PostgreSQL이 각 제약을 위한 유일 인덱스를 자동으로 생성한다.
+    미확정 검수 묶음의 부분 유일 인덱스는 Flyway SQL에서 선언한다.
+    CREATE UNIQUE INDEX uq_pending_measurement_reviews_unresolved_product
+      ON pending_measurement_reviews (product_id) WHERE variant_id IS NULL;
   '''
 }
 
-Table sellers {
+Table shopping_malls {
   code text [pk, note: '내부에서 고정하는 쇼핑몰 코드. ably, zigzag, musinsa 등']
   name text
+}
+
+Enum product_sale_status {
+  on_sale [note: '판매 중']
+  sold_out [note: '품절']
+  off_sale [note: '판매 종료']
 }
  
 Table products {
   id bigint [pk, increment]
-  mall_code text [not null, ref: > sellers.code]
+  mall_code text [not null, ref: > shopping_malls.code]
   source_product_id text [not null, note: '에이블리 sno, 지그재그 product_id, 무신사 goodsNo를 문자열로 보존']
   name text [not null]
   source_url text
+  price_krw integer [note: '마지막으로 확인한 표시 가격(원). 확인한 값이 없으면 NULL.']
+  sale_status product_sale_status [note: '마지막으로 확인한 판매 상태. 확인한 값이 없으면 NULL.']
+  product_info_checked_at timestamptz [note: '가격·판매 상태를 마지막으로 확인한 시각. 쇼핑몰 API 재조회 여부를 판단하는 데 사용한다.']
   last_measurements_received_at timestamptz [note: '실측을 마지막으로 수신한 시각. 검수 대상 실측만 받은 경우도 포함한다.']
 
   indexes {
     (mall_code, source_product_id) [unique, name: 'uq_products_mall_source_id']
+  }
+
+  checks {
+    `price_krw >= 0` [name: 'ck_products_price_krw_nonnegative']
   }
 
   Note: '재수집 시 쇼핑몰 코드와 원본 상품 ID로 기존 상품을 찾는다. 이름과 URL은 갱신할 수 있다.'
@@ -49,9 +66,11 @@ Table product_variants {
 
   indexes {
     (product_id, size_name, option_values) [unique, name: 'uq_product_variants_product_size_options']
+    (product_id, id) [unique, name: 'uq_product_variants_product_id_id']
   }
 
   checks {
+    `jsonb_typeof(option_values) = 'object'` [name: 'ck_product_variants_option_values_object']
     `cardinality(fit_tags) = num_nonnulls(
       array_position(fit_tags, 'wide'::fit_tag),
       array_position(fit_tags, 'straight'::fit_tag),
@@ -99,23 +118,46 @@ Enum measurement_review_reason {
   out_of_range [note: '실측값이 항목별 검수 범위를 벗어남']
   ambiguous_value [note: '원본 값에서 비교할 단일 치수를 확정하기 어려움']
   conflicting_values [note: '같은 사이즈·옵션과 실측 항목에 대해 수집 출처별 값이 다름']
+  unresolved_variant [note: '원본 실측을 연결할 사이즈·옵션을 확정하기 어려움']
 }
 
 Table pending_measurement_reviews {
   id bigint [pk, increment]
-  variant_id bigint [not null, ref: > product_variants.id]
-  measurement_type measurement_type [not null]
-  source_snapshot jsonb [not null, note: '수집 응답에서 검수에 필요한 실측 행과 측정 정보만 추려 저장한다.']
-  source text [not null, note: '응답 출처를 식별하는 API 이름. 예를 들어 GetSizeInfo를 저장한다.']
-  collected_at timestamptz [not null, note: '이 응답을 수집한 시각']
+  product_id bigint [not null, ref: > products.id]
+  variant_id bigint [note: '사이즈·옵션 미확정 묶음에서는 NULL']
+  measurement_type measurement_type [note: '확정 건의 실측 항목. 미확정 묶음에서는 NULL']
+  source_snapshot jsonb [not null, note: '확정 건은 검수용 원본 객체, 미확정 묶음은 출처와 수집 시각을 포함한 원본 항목 배열']
+  source_api text [note: '확정 건의 출처 API 이름. 미확정 묶음은 원본 항목별로 기록한다.']
+  collected_at timestamptz [note: '확정 건의 응답 수집 시각. 미확정 묶음은 원본 항목별로 기록한다.']
   reason_code measurement_review_reason [not null]
 
   indexes {
     (variant_id, measurement_type) [unique, name: 'uq_pending_measurement_reviews_variant_measurement']
   }
 
-  Note: '검수 대기 중인 항목을 저장한다. 수정 실측 저장과 대기 행 삭제를 한 트랜잭션에서 처리한다.'
+  checks {
+    `(
+      variant_id IS NOT NULL
+      AND measurement_type IS NOT NULL
+      AND source_api IS NOT NULL
+      AND collected_at IS NOT NULL
+      AND reason_code <> 'unresolved_variant'
+      AND jsonb_typeof(source_snapshot) = 'object'
+    ) OR (
+      variant_id IS NULL
+      AND measurement_type IS NULL
+      AND source_api IS NULL
+      AND collected_at IS NULL
+      AND reason_code = 'unresolved_variant'
+      AND jsonb_typeof(source_snapshot) = 'array'
+      AND source_snapshot <> '[]'::jsonb
+    )` [name: 'ck_pending_measurement_reviews_shape']
+  }
+
+  Note: '확정 건은 variant와 실측 항목당 하나를 둔다. 미확정 건은 variant_id가 NULL인 행에 상품별로 묶으며, 부분 유일 인덱스는 Project Note의 Flyway SQL을 따른다.'
 }
+
+Ref fk_pending_measurement_reviews_product_variant: pending_measurement_reviews.(product_id, variant_id) > product_variants.(product_id, id)
 
 Enum measurement_collection_issue_code {
   request_timeout [note: '요청 또는 실측 응답 대기가 제한 시간을 초과함']
